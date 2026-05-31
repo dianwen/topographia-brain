@@ -140,8 +140,17 @@ def build_game(gs: Dict[str, Any], seat: int) -> Game:
             ps[f"{key}_{res}_IN_HAND"] = fd[ri]
         # dev cards (full state -> every player's hidden cards are known to the server)
         hidden = p.get("dev_cards_hidden", {})
+        # A dev card bought THIS turn can't be played this turn (Topographia rule). Catanatron
+        # doesn't model "bought this turn", so it would offer to play a just-bought card and
+        # Topographia would reject the move. Hide this-turn buys from the playable hand for the
+        # current seat so the brain never proposes an illegal play. (Older copies stay playable;
+        # VP cards score passively via ACTUAL_VP below regardless.)
+        bought_now: Dict[str, int] = {}
+        if i == gs["current_turn_player_id"]:
+            for t_dev in gs.get("development_cards_bought_this_turn", []) or []:
+                bought_now[t_dev] = bought_now.get(t_dev, 0) + 1
         for t_dev, c_dev in DEV_T2C.items():
-            ps[f"{key}_{c_dev}_IN_HAND"] = hidden.get(t_dev, 0)
+            ps[f"{key}_{c_dev}_IN_HAND"] = max(0, hidden.get(t_dev, 0) - bought_now.get(t_dev, 0))
         # DIVERGENCE: Topographia only tracks knights_played per seat; other played
         # dev cards aren't itemised. Largest army only needs PLAYED_KNIGHT, so that's exact.
         ps[f"{key}_PLAYED_KNIGHT"] = p.get("knights_played", 0)
