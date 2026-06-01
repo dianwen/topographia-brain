@@ -1,18 +1,7 @@
 # catan-brain
 
 Stateless **Catanatron**-powered decision service for **Topographia** bot seats. Given a
-Topographia `GameState` + seat + difficulty, it returns one move. It is the GPL-licensed,
-arm's-length "brain" behind Topographia's `RemoteBrainPolicy`; Topographia never imports
-Catanatron — it only speaks the JSON `/decide` protocol. See `docs/bot.md` in the parent repo.
-
-> **License: GPL-3.0** (it links Catanatron, which is GPL-3.0). This is deliberately a
-> **separate repository / git submodule** so the copyleft stays contained and does not
-> reach Topographia. Add the full GPLv3 text to `LICENSE` before publishing.
-
-> **⚠️ Submodule remote not set yet.** This was scaffolded as a local git repo and added to
-> Topographia's `.gitmodules`. Create a remote (e.g. `github.com/<you>/catan-brain`), then:
-> `git -C brain remote add origin <url> && git -C brain push -u origin main` and update the
-> URL in the parent repo's `.gitmodules`.
+Topographia `GameState` + seat + difficulty, it returns one move.
 
 ## Run locally
 
