@@ -63,43 +63,39 @@ def _order(actions):
     return sorted(actions, key=lambda a: _ORDER.get(a.action_type, 7))
 
 
-def value_fn(state, color: Color) -> float:
-    """Heuristic value of `state` for `color`. VP dominates; production + mobility break ties."""
+# Catanatron's REAL tuned value function (vendored, GPL — see vendor/). "C" selects the
+# optimizer-tuned CONTENDER_WEIGHTS; otherwise the hand-set DEFAULT_WEIGHTS (matches
+# catanatron's default AlphaBetaPlayer). Override with BRAIN_VALUE_FN=C.
+_TUNED_FN = get_value_fn("contender_fn" if os.environ.get("BRAIN_VALUE_FN") == "C" else "base_fn", None)
+
+
+def _simple_value(state, color: Color) -> float:
+    """Fallback heuristic, used only if the tuned value fn raises on a reconstructed state."""
     key = player_key(state, color)
     vp = state.player_state[f"{key}_ACTUAL_VICTORY_POINTS"]
-
-    # expected resource income from owned nodes (settlement=1x, city=2x the node's pips)
     income = 0.0
     node_prod = state.board.map.node_production
     for node in state.buildings_by_color[color][SETTLEMENT]:
         income += sum(node_prod.get(node, {}).values())
     for node in state.buildings_by_color[color][CITY]:
         income += 2 * sum(node_prod.get(node, {}).values())
-
-    hand = (
-        state.player_state[f"{key}_WOOD_IN_HAND"]
-        + state.player_state[f"{key}_BRICK_IN_HAND"]
-        + state.player_state[f"{key}_SHEEP_IN_HAND"]
-        + state.player_state[f"{key}_WHEAT_IN_HAND"]
-        + state.player_state[f"{key}_ORE_IN_HAND"]
-    )
     lr = state.player_state[f"{key}_LONGEST_ROAD_LENGTH"]
-    buildable = len(state.board.board_buildable_ids)  # board-wide expansion room (shared signal)
+    return 1000.0 * vp + 12.0 * income + 5.0 * lr
 
-    return (
-        1000.0 * vp
-        + 12.0 * income
-        + 5.0 * lr
-        + min(hand, 7) * 1.0
-        + 0.05 * buildable
-    )
+
+def value_fn(game: Game, color: Color) -> float:
+    """Value of `game` for `color` via Catanatron's tuned value function."""
+    try:
+        return _TUNED_FN(game, color)
+    except Exception:
+        return _simple_value(game.state, color)
 
 
 def _expectiminimax(game: Game, p0: Color, depth: int, alpha: float, beta: float, deadline: float) -> float:
     if time.monotonic() >= deadline:
         raise _Deadline
     if game.winning_color() is not None or depth == 0:
-        return value_fn(game.state, p0)
+        return value_fn(game, p0)
 
     state = game.state
     actions = state.playable_actions
