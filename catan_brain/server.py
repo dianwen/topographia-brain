@@ -18,9 +18,12 @@ from typing import Any, Dict, Optional
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+from catanatron.models.enums import Action, ActionType, ActionPrompt, SETTLEMENT
+
 from .bot import TIERS, decide
 from .translate import build_game, action_to_intent, special_intent
 from . import negotiate
+from . import opening
 
 # How long best_proposal may spend evaluating candidate offers (added to the move time).
 _PROPOSE_BUDGET_S = 0.4
@@ -50,6 +53,17 @@ def _decide_worker(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     game = build_game(gs, seat)
     seat_color = game.state.colors[seat]
+
+    # Expert opening (Medium/Hard): a dedicated pip/diversity/port/pairing heuristic beats the
+    # generic value-fn search for setup placement (see opening.py). Easy keeps the search.
+    if game.state.is_initial_build_phase and difficulty in ("medium", "hard"):
+        if game.state.current_prompt == ActionPrompt.BUILD_INITIAL_SETTLEMENT:
+            act = Action(seat_color, ActionType.BUILD_SETTLEMENT, opening.best_initial_settlement(game, seat_color))
+        else:
+            snode = game.state.buildings_by_color[seat_color][SETTLEMENT][-1]
+            act = Action(seat_color, ActionType.BUILD_ROAD, opening.best_initial_road(game, seat_color, snode))
+        return {"intent": action_to_intent(act, game.state), "info": {"opening": difficulty}}
+
     pending = gs.get("pending_robber")
     proposals = gs.get("pending_trade_proposals") or []
     n = len(gs["players"])
