@@ -148,8 +148,11 @@ def decide(game: Game, seat_color: Color, difficulty: str, seed: int) -> Tuple[A
     if len(actions) == 1:
         return actions[0], info
 
-    # Epsilon blunder: skip the search entirely and play a random legal move.
-    if epsilon and rng.random() < epsilon:
+    # Epsilon blunder: skip the search entirely and play a random legal move. NOT during
+    # initial placement — setup is only two settlements/roads, so a single random opening
+    # cripples the whole game (looks "very weak"). Difficulty still differs in setup via
+    # search depth, and epsilon weakens main play as intended.
+    if epsilon and not game.state.is_initial_build_phase and rng.random() < epsilon:
         info["blunder"] = True
         return rng.choice(actions), info
 
