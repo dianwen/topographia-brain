@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
@@ -19,6 +20,10 @@ from pydantic import BaseModel
 
 from .bot import TIERS, decide
 from .translate import build_game, action_to_intent, special_intent
+from . import negotiate
+
+# How long best_proposal may spend evaluating candidate offers (added to the move time).
+_PROPOSE_BUDGET_S = 0.4
 
 # Bound the wait a touch above the tier cap (transport backstop; see docs/bot.md §7).
 RTT_MARGIN_S = 1.0
@@ -26,21 +31,57 @@ _DEFAULT_WORKERS = max(1, (os.cpu_count() or 2) - 1)
 
 
 def _decide_worker(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Pure CPU work, runs in a pool process: DTO -> chosen action intent."""
+    """Pure CPU work, runs in a pool process: DTO -> chosen action intent.
+
+    Dispatch order: steal (engine can't model) -> discard -> respond to an offer ->
+    confirm my own answered offer -> normal move (which may instead propose a trade).
+    Trades/discards are scored with the tuned value function (see negotiate.py).
+    """
     gs = payload["state"]
     seat = payload["seat"]
     difficulty = payload.get("difficulty", "medium")
     seed = payload.get("seed", 0)
+    allow_propose = payload.get("allow_propose", True)
 
-    # Decisions Catanatron's engine can't model (e.g. the standalone steal step).
+    # Standalone steal step — Catanatron bundles it into MOVE_ROBBER, so handle it raw.
     special = special_intent(gs, seat)
     if special is not None:
-        return {"intent": special, "info": {"special": True}}
+        return {"intent": special, "info": {"special": "steal"}}
 
     game = build_game(gs, seat)
     seat_color = game.state.colors[seat]
+    pending = gs.get("pending_robber")
+    proposals = gs.get("pending_trade_proposals") or []
+    n = len(gs["players"])
+
+    # Discard on a 7: keep the highest-value hand.
+    if pending and pending.get("step") == "discard":
+        owed = pending.get("remaining_discards", {})
+        if str(seat) in owed or seat in owed:
+            return {"intent": {"kind": "discard", "resources": negotiate.decide_discard(game, seat_color)},
+                    "info": {"discard": True}}
+
+    # Respond to a proposal awaiting this seat.
+    for p in proposals:
+        if p["proposer_id"] != seat and seat not in p.get("accepted_by", []) and seat not in p.get("rejected_by", []):
+            return {"intent": negotiate.decide_response(game, seat_color, p), "info": {"respond": True}}
+
+    # Confirm/cancel my own proposal once everyone else has responded.
+    for p in proposals:
+        if p["proposer_id"] == seat:
+            answered = set(p.get("accepted_by", [])) | set(p.get("rejected_by", []))
+            if all(o in answered for o in range(n) if o != seat):
+                return {"intent": negotiate.decide_confirm(game, seat_color, p), "info": {"confirm": True}}
+
+    # Normal move.
     action, info = decide(game, seat_color, difficulty, seed)
     intent = action_to_intent(action, game.state)
+
+    # Or propose a trade instead, if allowed, it's a clean turn, and a swap beats my best move.
+    if allow_propose and pending is None and not proposals:
+        prop = negotiate.best_proposal(game, seat_color, time.monotonic() + _PROPOSE_BUDGET_S)
+        if prop is not None:
+            return {"intent": prop, "info": {**info, "proposed": True}}
     return {"intent": intent, "info": info}
 
 
