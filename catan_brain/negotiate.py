@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from catanatron.game import Game
 from catanatron.models.actions import generate_playable_actions
@@ -130,17 +130,6 @@ def decide_confirm(game: Game, color, proposal: Dict) -> Dict:
 
 
 # ── 2. make an offer ──
-def _one_card_short(hand: Dict[str, int]) -> List[Tuple[str, str]]:
-    """If exactly one resource short of some build, return [(missing_res, build)] candidates."""
-    out = []
-    for build, cost in COSTS.items():
-        deficit = {t: max(0, cost.get(t, 0) - hand[t]) for t in TOPO_RES}
-        if sum(deficit.values()) == 1:
-            missing = next(t for t in TOPO_RES if deficit[t] == 1)
-            out.append((missing, build))
-    return out
-
-
 def _can_build(game: Game, color, build: str) -> bool:
     board = game.state.board
     key = player_key(game.state, color)
@@ -160,38 +149,48 @@ def _can_build(game: Game, color, build: str) -> bool:
 
 
 def best_proposal(game: Game, color, deadline: float) -> Optional[Dict]:
-    """Best (offer, request) to propose this turn, or None. Only fires when a 1-card swap
-    unlocks a build AND some opponent would accept and isn't a leader we'd be feeding."""
+    """Best 1:1 (give surplus, get a needed card) to propose, or None.
+
+    Fires when I hold spare cards AND lack cards for a build I can actually pursue, the swap
+    improves my best move (value-fn lookahead — biggest when it unlocks a build), and an
+    opponent would rationally accept. Returns the most-improving such offer."""
     hand = _hand(game.state, color)
-    shorts = [(m, b) for (m, b) in _one_card_short(hand) if _can_build(game, color, b)]
-    if not shorts:
+    pursuable = [b for b in ("city", "settlement", "road") if _can_build(game, color, b)]
+    if not pursuable:
+        return None
+    # Needs: any resource I'm short of for a pursuable build. (If I can already afford one,
+    # there's nothing to trade FOR.)
+    needs = {t for b in pursuable for t in TOPO_RES if hand[t] < COSTS[b].get(t, 0)}
+    if not needs:
+        return None
+    # Candidates: give a card I'm NOT short of, get a card I need. We don't pre-filter by a
+    # rigid "surplus" rule — the value-fn lookahead below is the real gate: it penalizes
+    # giving away a card I actually need (my best move's value drops) and rewards getting one
+    # that unlocks a build, so only genuinely-improving swaps survive.
+    givable = [t for t in TOPO_RES if hand[t] >= 1 and t not in needs]
+    if not givable:
         return None
 
-    v_now = value_after_swap_then_build(game, color, {}, {}, deadline)
     opponents = [c for c in game.state.colors if c != color]
-
+    v_now = value_after_swap_then_build(game, color, {}, {}, deadline)
+    # Pre-rank cheaply (no lookahead), then verify the top few with the lookahead.
+    cands = sorted(
+        ((g, n) for g in givable for n in needs),
+        key=lambda gn: value_after_swap(game, color, {gn[1]: 1}, {gn[0]: 1}),
+        reverse=True,
+    )
     best = None
-    best_v = v_now + EPS  # require a real improvement
-    for missing, build in shorts:
-        cost = COSTS[build]
-        # Only give cards held in EXCESS of the target build's cost — never give away a
-        # card the build itself needs. Prefer the most-spare resource.
-        surplus = sorted(
-            (t for t in TOPO_RES if t != missing and hand[t] > cost.get(t, 0)),
-            key=lambda t: -(hand[t] - cost.get(t, 0)),
-        )
-        for give in surplus[:3]:
-            if time.monotonic() >= deadline:
-                break
-            offer = {give: 1}
-            request = {missing: 1}
-            v_trade = value_after_swap_then_build(game, color, {missing: 1}, {give: 1}, deadline)
-            if v_trade <= best_v:
-                continue
-            # Need at least one opponent who would rationally accept.
-            if any(_would_accept(game, opp, color, offer, request) for opp in opponents):
-                best_v = v_trade
-                best = {"kind": "propose_trade", "offer": offer, "request": request}
+    best_v = v_now + RESP_EPS  # require a genuine improvement (build-unlocking ones dominate)
+    for give, need in cands[:6]:
+        if time.monotonic() >= deadline:
+            break
+        offer, request = {give: 1}, {need: 1}
+        v_trade = value_after_swap_then_build(game, color, {need: 1}, {give: 1}, deadline)
+        if v_trade <= best_v:
+            continue
+        if any(_would_accept(game, opp, color, offer, request) for opp in opponents):
+            best_v = v_trade
+            best = {"kind": "propose_trade", "offer": offer, "request": request}
     return best
 
 

@@ -77,8 +77,15 @@ def _decide_worker(payload: Dict[str, Any]) -> Dict[str, Any]:
     action, info = decide(game, seat_color, difficulty, seed)
     intent = action_to_intent(action, game.state)
 
-    # Or propose a trade instead, if allowed, it's a clean turn, and a swap beats my best move.
-    if allow_propose and pending is None and not proposals:
+    # Or propose a trade instead — only on MY turn, AFTER rolling (pre-roll the only legal
+    # move is ROLL; proposing then is rejected as "must roll dice first"), on a clean turn.
+    if (
+        allow_propose
+        and pending is None
+        and not proposals
+        and gs.get("dice_rolled")
+        and seat == gs["current_turn_player_id"]
+    ):
         prop = negotiate.best_proposal(game, seat_color, time.monotonic() + _PROPOSE_BUDGET_S)
         if prop is not None:
             return {"intent": prop, "info": {**info, "proposed": True}}
