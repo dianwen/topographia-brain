@@ -45,8 +45,13 @@ def _decide_worker(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _warm_up():
-    # Touch the geometry bijection so each worker pays import cost once, not per request.
+    # Each worker pays one-time costs here, not on its first request: build the geometry
+    # bijection and prime Catanatron's cached all-pairs node distances (floyd-warshall),
+    # which the tuned value function's reachability features need.
     from . import geometry  # noqa: F401
+    from catanatron.models.board import get_node_distances
+
+    get_node_distances()
 
 
 POOL: Optional[ProcessPoolExecutor] = None

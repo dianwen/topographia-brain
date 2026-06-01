@@ -16,12 +16,15 @@ from __future__ import annotations
 import math
 import random
 import time
+import os
 from typing import Dict, Tuple
 
 from catanatron.game import Game
 from catanatron.models.enums import Action, ActionType, SETTLEMENT, CITY
 from catanatron.models.player import Color
 from catanatron.state_functions import player_key
+
+from .vendor.value import get_value_fn
 
 TIERS: Dict[str, Tuple[int, float, float]] = {
     "easy": (1, 0.30, 0.10),
@@ -120,7 +123,7 @@ def _expectiminimax(game: Game, p0: Color, depth: int, alpha: float, beta: float
             alpha = max(alpha, best)
             if beta <= alpha:
                 break
-        return best if best != -math.inf else value_fn(state, p0)
+        return best if best != -math.inf else value_fn(game, p0)
     else:
         worst = math.inf
         for a in _order(actions):
@@ -130,7 +133,7 @@ def _expectiminimax(game: Game, p0: Color, depth: int, alpha: float, beta: float
             beta = min(beta, worst)
             if beta <= alpha:
                 break
-        return worst if worst != math.inf else value_fn(state, p0)
+        return worst if worst != math.inf else value_fn(game, p0)
 
 
 def decide(game: Game, seat_color: Color, difficulty: str, seed: int) -> Tuple[Action, dict]:
