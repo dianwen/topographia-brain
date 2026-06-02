@@ -147,6 +147,11 @@ class DecideRequest(BaseModel):
     seat: int
     difficulty: str = "medium"
     seed: int = 0
+    # The caller's "propose only once per turn" guard (see games.ts `proposedThisTurn`).
+    # MUST be declared here: Pydantic drops undeclared body fields, so without this the
+    # flag never reaches `_decide_worker` and defaults to True — the bot then re-proposes
+    # the same trade every tick after a rejection/cancellation (an infinite offer loop).
+    allow_propose: bool = True
 
 
 class DecideResponse(BaseModel):

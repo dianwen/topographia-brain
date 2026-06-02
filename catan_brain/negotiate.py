@@ -24,9 +24,12 @@ from .bot import value_fn, _expectiminimax, _Deadline
 
 TOPO_RES = ["lumber", "brick", "wool", "grain", "ore"]
 # Value-fn units. public_vps weight ~3e14, production ~1e8.
-EPS = 1e6  # for build-unlocking gains (with-lookahead): require a real, VP/production-scale win.
 # A 1:1 swap with no immediate build only shifts the hand-synergy term (weight 1e2), so the
-# out-of-turn accept/reject comparison needs a small threshold — just "the hand genuinely improves".
+# value comparisons need just a small threshold — "the hand genuinely improves". The SAME gate
+# governs all three trade decisions (respond / propose / confirm) so they stay consistent: a
+# swap worth proposing is worth completing once accepted, and one worth accepting is worth its
+# threshold. (They previously diverged — propose at RESP_EPS but confirm at a build-scale 1e6 —
+# so the bot proposed hand-synergy swaps it then refused to complete, re-proposing forever.)
 RESP_EPS = 1.0
 
 # Build costs in Topographia resource names.
@@ -121,7 +124,7 @@ def decide_confirm(game: Game, color, proposal: Dict) -> Dict:
     d_me = value_after_swap_then_build(game, color, request, offer, deadline) - value_after_swap_then_build(
         game, color, {}, {}, deadline
     )
-    if not accepters or d_me <= EPS:
+    if not accepters or d_me <= RESP_EPS:
         return {"kind": "cancel_trade", "proposal_id": pid}
     # Give the cards to the least-threatening accepter (lowest VP).
     vp = lambda i: game.state.player_state[f"P{i}_ACTUAL_VICTORY_POINTS"]
