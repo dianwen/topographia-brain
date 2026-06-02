@@ -24,7 +24,7 @@ from catanatron.models.enums import Action, ActionType, SETTLEMENT, CITY
 from catanatron.models.player import Color
 from catanatron.state_functions import player_key
 
-from .vendor.value import get_value_fn
+from .vendor.value import get_value_fn, DEFAULT_WEIGHTS, CONTENDER_WEIGHTS
 
 TIERS: Dict[str, Tuple[int, float, float]] = {
     "easy": (1, 0.30, 0.10),
@@ -69,7 +69,40 @@ def _order(actions):
 # Catanatron's REAL tuned value function (vendored, GPL — see vendor/). "C" selects the
 # optimizer-tuned CONTENDER_WEIGHTS; otherwise the hand-set DEFAULT_WEIGHTS (matches
 # catanatron's default AlphaBetaPlayer). Override with BRAIN_VALUE_FN=C.
-_TUNED_FN = get_value_fn("contender_fn" if os.environ.get("BRAIN_VALUE_FN") == "C" else "base_fn", None)
+_USE_CONTENDER = os.environ.get("BRAIN_VALUE_FN") == "C"
+_TUNED_FN = get_value_fn("contender_fn" if _USE_CONTENDER else "base_fn", None)
+# The per-VP weight the tuned fn applies to PUBLIC victory points (dominates the score).
+_PUBLIC_VPS_W = (CONTENDER_WEIGHTS if _USE_CONTENDER else DEFAULT_WEIGHTS)["public_vps"]
+
+# ── Contested-bonus-VP ramp ──────────────────────────────────────────────────
+# Longest Road and Largest Army each grant +2 PUBLIC VP, which the tuned value fn counts at
+# the full (dominant) per-VP weight — so the search will chase a bonus (+2 VP) over building a
+# settlement (+1 VP) even early, when a settlement's compounding production and un-stealable VP
+# are worth more. But a bonus that *clinches the win* is worth every bit of its VP. So we scale
+# the bonus's VP value by a ramp: a low floor early, rising to full as the holder nears the
+# winning VP count. Implemented as a correction to the tuned fn (vendor/value.py stays verbatim):
+# we subtract back the un-earned fraction of the bonus's VP value.
+#   BRAIN_BONUS_VP_FLOOR — early-game multiplier on bonus VP (1.0 disables the discount entirely)
+#   BRAIN_BONUS_VP_RAMP  — VP-from-win window over which the multiplier ramps floor → 1.0
+_BONUS_VP_FLOOR = float(os.environ.get("BRAIN_BONUS_VP_FLOOR", "0.15"))
+_BONUS_VP_RAMP = float(os.environ.get("BRAIN_BONUS_VP_RAMP", "4"))
+
+
+def _bonus_vp_multiplier(actual_vp: float, vps_to_win: int) -> float:
+    """0..1 weight for contested bonus VP, by how close the holder is to winning.
+
+    `actual_vp` already includes the bonus being valued (we score post-move states), so
+    `vps_to_win - actual_vp` is the VP still needed AFTER this bonus. At <=0 the bonus reaches
+    the win -> full weight; beyond the ramp window -> the early floor; linear in between.
+    """
+    if _BONUS_VP_RAMP <= 0:
+        return 1.0
+    remaining = vps_to_win - actual_vp
+    if remaining <= 0:
+        return 1.0
+    if remaining >= _BONUS_VP_RAMP:
+        return _BONUS_VP_FLOOR
+    return _BONUS_VP_FLOOR + (1.0 - _BONUS_VP_FLOOR) * (_BONUS_VP_RAMP - remaining) / _BONUS_VP_RAMP
 
 
 def _simple_value(state, color: Color) -> float:
@@ -87,11 +120,23 @@ def _simple_value(state, color: Color) -> float:
 
 
 def value_fn(game: Game, color: Color) -> float:
-    """Value of `game` for `color` via Catanatron's tuned value function."""
+    """Value of `game` for `color` via Catanatron's tuned value function, with contested
+    bonus VP (Longest Road / Largest Army) discounted early and ramped to full near the win."""
     try:
-        return _TUNED_FN(game, color)
+        base = _TUNED_FN(game, color)
     except Exception:
         return _simple_value(game.state, color)
+    if _BONUS_VP_FLOOR >= 1.0:
+        return base
+    ps = game.state.player_state
+    key = player_key(game.state, color)
+    bonus_vp = (2 if ps.get(f"{key}_HAS_ROAD") else 0) + (2 if ps.get(f"{key}_HAS_ARMY") else 0)
+    if not bonus_vp:
+        return base
+    actual_vp = ps.get(f"{key}_ACTUAL_VICTORY_POINTS", ps[f"{key}_VICTORY_POINTS"])
+    mult = _bonus_vp_multiplier(actual_vp, game.vps_to_win)
+    # base counted the bonus's VP at full weight; subtract back the discounted-away fraction.
+    return base - bonus_vp * (1.0 - mult) * _PUBLIC_VPS_W
 
 
 def _expectiminimax(game: Game, p0: Color, depth: int, alpha: float, beta: float, deadline: float) -> float:

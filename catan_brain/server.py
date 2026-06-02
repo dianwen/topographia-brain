@@ -161,6 +161,8 @@ class _AccessLogErrorsOnly(logging.Filter):
 
 logging.getLogger("uvicorn.access").addFilter(_AccessLogErrorsOnly())
 
+log = logging.getLogger("catan_brain")
+
 app = FastAPI(title="catan-brain", lifespan=lifespan)
 
 
@@ -192,5 +194,18 @@ async def decide_endpoint(req: DecideRequest) -> DecideResponse:
     cap_s = TIERS.get(req.difficulty, TIERS["medium"])[2]
     loop = asyncio.get_running_loop()
     fut = loop.run_in_executor(POOL, _decide_worker, req.model_dump())
-    result = await asyncio.wait_for(fut, timeout=cap_s + RTT_MARGIN_S)
+    deadline = cap_s + RTT_MARGIN_S
+    try:
+        result = await asyncio.wait_for(fut, timeout=deadline)
+    except asyncio.TimeoutError:
+        # The bot didn't decide within its think cap; the caller has already (or will)
+        # fall back to its local heuristic. Surface it so a persistently slow/wedged
+        # worker is visible rather than silently degrading every move to the fallback.
+        log.error(
+            "decide timed out after %.1fs (seat %s, difficulty %s); no move returned",
+            deadline,
+            req.seat,
+            req.difficulty,
+        )
+        raise
     return DecideResponse(**result)
