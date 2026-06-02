@@ -24,6 +24,7 @@ from .bot import TIERS, decide
 from .translate import build_game, action_to_intent, special_intent
 from . import negotiate
 from . import opening
+from . import robber
 
 # How long best_proposal may spend evaluating candidate offers (added to the move time).
 _PROPOSE_BUDGET_S = 0.4
@@ -74,6 +75,14 @@ def _decide_worker(payload: Dict[str, Any]) -> Dict[str, Any]:
         if str(seat) in owed or seat in owed:
             return {"intent": {"kind": "discard", "resources": negotiate.decide_discard(game, seat_color)},
                     "info": {"discard": True}}
+
+    # Move the robber (Medium/Hard): a denial-aware heuristic beats the value-fn search, which
+    # only scores the bot's own position and is ~blind to blocking opponents (see robber.py).
+    # Easy keeps the search. The victim is chosen separately in the steal step (special_intent).
+    if pending and pending.get("step") == "move" and difficulty in ("medium", "hard"):
+        act = robber.best_robber_action(game, seat_color)
+        if act is not None:
+            return {"intent": action_to_intent(act, game.state), "info": {"robber": difficulty}}
 
     # Respond to a proposal awaiting this seat.
     for p in proposals:

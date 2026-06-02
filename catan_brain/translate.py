@@ -375,7 +375,9 @@ def special_intent(gs: Dict[str, Any], seat: int) -> Optional[Dict[str, Any]]:
 
     DIVERGENCE: Topographia splits the robber into move_robber then steal; Catanatron bundles
     them into one MOVE_ROBBER. So the standalone 'steal' step has no Catanatron prompt — we
-    pick the eligible victim holding the most cards (a reasonable heuristic).
+    pick the victim ourselves: rob whoever is *winning* (highest total VP) among the eligible
+    card-holders, tie-broken by hand size. This pressures the leader rather than fixating on
+    whoever happens to hold the most cards (which tended to pick on a trailing player).
     """
     pending = gs.get("pending_robber")
     if pending and pending.get("step") == "steal":
@@ -383,6 +385,18 @@ def special_intent(gs: Dict[str, Any], seat: int) -> Optional[Dict[str, Any]]:
         if not eligible:
             return {"kind": "steal", "target_player_id": None}
         players = gs["players"]
-        best = max(eligible, key=lambda pid: sum(players[pid]["resources"].values()))
+
+        def _hand_size(pid: int) -> int:
+            return sum(players[pid]["resources"].values())
+
+        def _total_vp(pid: int) -> int:
+            p = players[pid]
+            hidden_vp = (p.get("dev_cards_hidden") or {}).get("victory_point", 0)
+            return p.get("victory_points_visible", 0) + hidden_vp
+
+        # Stealing from a card-less player yields nothing, so only they can't be the lone
+        # victim. The engine only reaches the steal step when ≥1 eligible player holds cards.
+        candidates = [pid for pid in eligible if _hand_size(pid) > 0] or eligible
+        best = max(candidates, key=lambda pid: (_total_vp(pid), _hand_size(pid)))
         return {"kind": "steal", "target_player_id": best}
     return None
