@@ -9,6 +9,7 @@ See docs/bot.md §6.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -138,6 +139,27 @@ async def lifespan(app: FastAPI):
     yield
     POOL.shutdown(cancel_futures=True)
 
+
+class _AccessLogErrorsOnly(logging.Filter):
+    """Drop uvicorn access-log lines for successful responses; keep errors (status >= 400).
+
+    /decide is hit on every bot move, so the default per-request access log is pure
+    noise. We still want failed responses surfaced, so let >= 400 through. The status
+    code is the 5th positional arg of uvicorn's access record (client, method, path,
+    http_version, status_code).
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 5:
+            try:
+                return int(args[4]) >= 400
+            except (TypeError, ValueError):
+                return True
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_AccessLogErrorsOnly())
 
 app = FastAPI(title="catan-brain", lifespan=lifespan)
 
